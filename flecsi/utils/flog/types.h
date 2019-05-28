@@ -627,6 +627,51 @@ private:
 } // namespace utils
 } // namespace flecsi
 
+#define send_packets_to_one()                                                  \
+                                                                               \
+  if(mpi_state_t::instance().initialized()) {                                  \
+    const size_t block_size =                                                  \
+      mpi_state_t::instance().packets().size() * packet_t::bytes();            \
+    char * data = mpi_state_t::instance().rank() == 0                          \
+                    ? new char[mpi_state_t::instance().size() * block_size]    \
+                    : nullptr;                                                 \
+                                                                               \
+    flecsi::utils::binary_serializer_t serializer;                             \
+    serializer << mpi_state_t::instance().packets();                           \
+                                                                               \
+    MPI_Gather(serializer.data(),                                              \
+      serializer.size(),                                                       \
+      MPI_BYTE,                                                                \
+      data,                                                                    \
+      serializer.size(),                                                       \
+      MPI_BYTE,                                                                \
+      0,                                                                       \
+      MPI_COMM_WORLD);                                                         \
+                                                                               \
+    if(mpi_state_t::instance().rank() == 0) {                                  \
+                                                                               \
+      std::lock_guard<std::mutex> guard(                                       \
+        mpi_state_t::instance().packets_mutex());                              \
+                                                                               \
+      for(size_t i{0}; i < mpi_state_t::instance().size(); ++i) {              \
+        flecsi::utils::binary_deserializer_t deserialier(                      \
+          data[i * block_size], block_size);                                   \
+        std::vector<packet_t> packets;                                         \
+        deserialier >> packets;                                                \
+                                                                               \
+        for(auto p : packets) {                                                \
+          mpi_state_t::instance().packets().push_back(p);                      \
+        } /* for */                                                            \
+      } /* for */                                                              \
+                                                                               \
+      delete[] data;                                                           \
+                                                                               \
+    } \
+    else { \
+      mpi_state_t::instance().packets().clear(); \
+    } /* if */                                                                 \
+  } /* if */
+
 #define send_to_one(message)                                                   \
                                                                                \
   if(mpi_state_t::instance().initialized()) {                                  \

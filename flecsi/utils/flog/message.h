@@ -78,13 +78,18 @@ struct log_message_t {
 
 #if defined(FLOG_ENABLE_MPI)
     if(can_send_to_one_ && flog_t::instance().initialized()) {
+#if defined(FLOG_BUFFER_MPI)
+      mpi_state_t::instance().packets().push_back(
+        {flog_t::instance().buffer_stream().str().c_str()});
+#else
       send_to_one(flog_t::instance().buffer_stream().str().c_str());
+#endif
     }
     else {
       if(!flog_t::instance().initialized()) {
 #if defined(FLOG_ENABLE_EXTERNAL)
         std::cout << flog_t::instance().buffer_stream().str();
-#endif
+#endif // FLOG_ENABLE_EXTERNAL
       }
       else {
         flog_t::instance().stream() << flog_t::instance().buffer_stream().str();
