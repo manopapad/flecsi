@@ -50,6 +50,51 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
 
   task_prolog_t() = default;
 
+  template<typename T,
+    size_t EXCLUSIVE_PERMISSIONS,
+    size_t SHARED_PERMISSIONS,
+    size_t GHOST_PERMISSIONS>
+  void handle(dense_accessor<T,
+    EXCLUSIVE_PERMISSIONS,
+    SHARED_PERMISSIONS,
+    GHOST_PERMISSIONS> & a) {
+
+    auto & h = a.handle;
+    auto & context = context_t::instance();
+
+    if(!(context.hasBeenModified[h.index_space].find(h.fid) != context.hasBeenModified[h.index_space].end() && context.hasBeenModified[h.index_space][h.fid]))
+      return;
+
+    const int my_color = context.color();
+    auto & my_coloring_info = context.coloring_info(h.index_space).at(my_color);
+    auto & field_metadata = context.registered_field_metadata().at(h.fid);
+
+    auto data = context.registered_field_data().at(h.fid).data();
+    auto shared_data = data + my_coloring_info.exclusive * sizeof(T);
+
+    MPI_Win win;
+    MPI_Win_create(shared_data, my_coloring_info.shared * sizeof(T), sizeof(T),
+                   MPI_INFO_NULL, MPI_COMM_WORLD, &win);
+
+    MPI_Win_post(field_metadata.shared_users_grp, 0, win);
+    MPI_Win_start(field_metadata.ghost_owners_grp, 0, win);
+
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+    for(auto ghost_owner : my_coloring_info.ghost_owners) {
+      std::cout << rank << " / " << h.fid << " getting values from " << ghost_owner << std::endl;
+      MPI_Get(h.ghost_data, 1, field_metadata.origin_types[ghost_owner],
+        ghost_owner, 0, 1, field_metadata.target_types[ghost_owner], win);
+    }
+
+    MPI_Win_complete(win);
+    MPI_Win_wait(win);
+
+    MPI_Win_free(&win);
+
+  }
+
   template<typename T, size_t PERMISSIONS>
   void handle(global_accessor_u<T, PERMISSIONS> & a) {
     if(a.handle.state >= SPECIALIZATION_SPMD_INIT) {
@@ -286,6 +331,13 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
 
   template<typename T>
   void handle(T &) {} // handle
+
+  void launch_copies() {
+
+  }
+
+  std::map<field_id_t, unsigned char*> dataBuffers;
+  std::map<field_id_t, unsigned char*> sharedDataBuffers;
 
 }; // struct task_prolog_t
 

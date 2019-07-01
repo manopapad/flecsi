@@ -79,28 +79,38 @@ struct task_epilog_t : public flecsi::utils::tuple_walker_u<task_epilog_t> {
     GHOST_PERMISSIONS> & a) {
     auto & h = a.handle;
 
-    // Skip Read Only handles
-    if(EXCLUSIVE_PERMISSIONS == ro && SHARED_PERMISSIONS == ro)
-      return;
-
     auto & context = context_t::instance();
-    const int my_color = context.color();
-    auto & my_coloring_info = context.coloring_info(h.index_space).at(my_color);
 
-    auto & field_metadata = context.registered_field_metadata().at(h.fid);
-
-    MPI_Win win = field_metadata.win;
-
-    MPI_Win_post(field_metadata.shared_users_grp, 0, win);
-    MPI_Win_start(field_metadata.ghost_owners_grp, 0, win);
-
-    for(auto ghost_owner : my_coloring_info.ghost_owners) {
-      MPI_Get(h.ghost_data, 1, field_metadata.origin_types[ghost_owner],
-        ghost_owner, 0, 1, field_metadata.target_types[ghost_owner], win);
+    // Skip Read Only handles
+    if(EXCLUSIVE_PERMISSIONS == ro && SHARED_PERMISSIONS == ro) {
+      context.hasBeenModified[h.index_space][h.fid] = false;
+      return;
     }
 
-    MPI_Win_complete(win);
-    MPI_Win_wait(win);
+    if(SHARED_PERMISSIONS == rw || SHARED_PERMISSIONS == wo)
+      context.hasBeenModified[h.index_space][h.fid] = true;
+
+//     const int my_color = context.color();
+//     auto & my_coloring_info = context.coloring_info(h.index_space).at(my_color);
+//
+//     auto & field_metadata = context.registered_field_metadata().at(h.fid);
+//
+//     MPI_Win win = field_metadata.win;
+//
+//     MPI_Win_post(field_metadata.shared_users_grp, 0, win);
+//     MPI_Win_start(field_metadata.ghost_owners_grp, 0, win);
+//
+//     int rank;
+//     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+//
+//     for(auto ghost_owner : my_coloring_info.ghost_owners) {
+//       std::cout << rank << " / " << h.fid << " calling get from " << ghost_owner << std::endl;
+//       MPI_Get(h.ghost_data, 1, field_metadata.origin_types[ghost_owner],
+//         ghost_owner, 0, 1, field_metadata.target_types[ghost_owner], win);
+//     }
+//
+//     MPI_Win_complete(win);
+//     MPI_Win_wait(win);
   } // handle
 
   template<typename T, size_t PERMISSIONS>

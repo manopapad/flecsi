@@ -277,10 +277,10 @@ struct mpi_context_policy_t {
       metadata.target_types.insert({ghost_owner, target_type});
     }
 
-    auto data = field_data[fid].data();
-    auto shared_data = data + coloring_info.exclusive * sizeof(T);
-    MPI_Win_create(shared_data, coloring_info.shared * sizeof(T), sizeof(T),
-      MPI_INFO_NULL, MPI_COMM_WORLD, &metadata.win);
+//     auto data = field_data[fid].data();
+//     auto shared_data = data + coloring_info.exclusive * sizeof(T);
+//     MPI_Win_create(shared_data, coloring_info.shared * sizeof(T), sizeof(T),
+//       MPI_INFO_NULL, MPI_COMM_WORLD, &metadata.win);
 
     field_metadata.insert({fid, metadata});
   }
@@ -568,6 +568,8 @@ struct mpi_context_policy_t {
   } // reduction_types
 
   int rank;
+
+  std::map<size_t, std::map<field_id_t, bool> > hasBeenModified;
 
 private:
   int color_ = 0;
