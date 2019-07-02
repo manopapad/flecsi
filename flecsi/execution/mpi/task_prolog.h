@@ -72,26 +72,15 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
     auto data = context.registered_field_data().at(h.fid).data();
     auto shared_data = data + my_coloring_info.exclusive * sizeof(T);
 
-    MPI_Win win;
-    MPI_Win_create(shared_data, my_coloring_info.shared * sizeof(T), sizeof(T),
-                   MPI_INFO_NULL, MPI_COMM_WORLD, &win);
+    sharedDataBuffers[h.index_space][h.fid] = shared_data;
+    sizeOfTemplateParam[h.index_space][h.fid] = sizeof(T);
 
-    MPI_Win_post(field_metadata.shared_users_grp, 0, win);
-    MPI_Win_start(field_metadata.ghost_owners_grp, 0, win);
-
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    ghostDataBuffers[h.index_space][h.fid] = reinterpret_cast<void*>(h.ghost_data);
 
     for(auto ghost_owner : my_coloring_info.ghost_owners) {
-      std::cout << rank << " / " << h.fid << " getting values from " << ghost_owner << std::endl;
-      MPI_Get(h.ghost_data, 1, field_metadata.origin_types[ghost_owner],
-        ghost_owner, 0, 1, field_metadata.target_types[ghost_owner], win);
+        originMpiDataTypes[h.index_space][ghost_owner][h.fid] = field_metadata.origin_types[ghost_owner];
+        targetMpiDataTypes[h.index_space][ghost_owner][h.fid] = field_metadata.target_types[ghost_owner];
     }
-
-    MPI_Win_complete(win);
-    MPI_Win_wait(win);
-
-    MPI_Win_free(&win);
 
   }
 
@@ -334,10 +323,53 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
 
   void launch_copies() {
 
+    auto & context = context_t::instance();
+    const int my_color = context.color();
+
+    for(auto const& [index_space, allranks] : originMpiDataTypes) {
+
+      for(auto const& [ghost_owner, allfields] : allranks) {
+
+        for(auto const& [fid, datatype] : allfields) {
+
+          auto & context = context_t::instance();
+
+          if(!(context.hasBeenModified[index_space].find(fid) != context.hasBeenModified[index_space].end() && context.hasBeenModified[index_space][fid]))
+            continue;
+
+          auto & my_coloring_info = context.coloring_info(index_space).at(my_color);
+          auto & field_metadata = context.registered_field_metadata().at(fid);
+
+          MPI_Win win;
+          MPI_Win_create(sharedDataBuffers[index_space][fid], my_coloring_info.shared * sizeOfTemplateParam[index_space][fid], sizeOfTemplateParam[index_space][fid],
+                        MPI_INFO_NULL, MPI_COMM_WORLD, &win);
+
+          MPI_Win_post(field_metadata.shared_users_grp, 0, win);
+          MPI_Win_start(field_metadata.ghost_owners_grp, 0, win);
+
+          MPI_Get(ghostDataBuffers[index_space][fid], 1, datatype,
+            ghost_owner, 0, 1, targetMpiDataTypes[index_space][ghost_owner][fid], win);
+
+          MPI_Win_complete(win);
+          MPI_Win_wait(win);
+
+          MPI_Win_free(&win);
+
+        }
+
+      }
+
+    }
+
   }
 
-  std::map<field_id_t, unsigned char*> dataBuffers;
-  std::map<field_id_t, unsigned char*> sharedDataBuffers;
+  std::map<size_t, std::map<field_id_t, unsigned char*> > sharedDataBuffers;
+  std::map<size_t, std::map<field_id_t, size_t> > sizeOfTemplateParam;
+  std::map<size_t, std::map<field_id_t, void*> > ghostDataBuffers;
+
+  // index_space, remoterank, field_id, datatype
+  std::map<size_t, std::map<int, std::map<field_id_t, MPI_Datatype> > > originMpiDataTypes;
+  std::map<size_t, std::map<int, std::map<field_id_t, MPI_Datatype> > > targetMpiDataTypes;
 
 }; // struct task_prolog_t
 
