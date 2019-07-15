@@ -418,6 +418,14 @@ endif()
 
 list(APPEND FLECSI_LIBRARY_DEPENDENCIES ${COLORING_LIBRARIES})
 
+
+#------------------------------------------------------------------------------#
+# USE ONE-SIDED COMMUNICATION FOR DENSE HANDLE
+#------------------------------------------------------------------------------#
+option(FLECSI_USE_ONE_SIDED_AGGCOMM
+       "Use one-sided communication (MPI_Win) for aggregated communication (dense handle)"
+       OFF)
+
 #------------------------------------------------------------------------------#
 # Process id bits
 #------------------------------------------------------------------------------#

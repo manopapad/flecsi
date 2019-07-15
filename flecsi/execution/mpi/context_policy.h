@@ -206,21 +206,6 @@ struct mpi_context_policy_t {
    Field metadata is used maintain MPI information and data types for
    MPI windows/one-sided communication to perform ghost copies.
    */
-  struct field_metadata_t {
-
-    MPI_Group shared_users_grp;
-    MPI_Group ghost_owners_grp;
-
-    std::map<int, MPI_Datatype> origin_types;
-    std::map<int, MPI_Datatype> target_types;
-
-    MPI_Win win;
-  };
-
-  /*!
-   Field metadata is used maintain MPI information and data types for
-   MPI windows/one-sided communication to perform ghost copies.
-   */
   struct sparse_field_metadata_t {
     MPI_Group shared_users_grp;
     MPI_Group ghost_owners_grp;
@@ -246,6 +231,19 @@ struct mpi_context_policy_t {
   void register_field_metadata(const field_id_t fid,
     const coloring_info_t & coloring_info,
     const index_coloring_t & index_coloring) {
+
+#ifdef FLECSI_USE_ONE_SIDED_AGGCOMM
+
+    std::vector<int> shared_users(coloring_info.shared_users.begin(), coloring_info.shared_users.end());
+    std::vector<int> ghost_owners(coloring_info.ghost_owners.begin(), coloring_info.ghost_owners.end());
+
+    MPI_Group comm_grp;
+    MPI_Comm_group(MPI_COMM_WORLD, &comm_grp);
+
+    MPI_Group_incl(comm_grp, shared_users.size(), shared_users.data(), &sharedGroups[fid]);
+    MPI_Group_incl(comm_grp, ghost_owners.size(), ghost_owners.data(), &ghostGroups[fid]);
+
+#endif
 
     for(auto & shared : index_coloring.shared) {
       for(auto & s : shared.shared) {
@@ -490,10 +488,6 @@ struct mpi_context_policy_t {
 #endif
   } // register_field_metadata_
 
-  std::map<field_id_t, field_metadata_t> & registered_field_metadata() {
-    return field_metadata;
-  };
-
   /*!
    Register new field data, i.e. allocate a new buffer for the specified field
    ID.
@@ -546,7 +540,7 @@ struct mpi_context_policy_t {
   int rank;
 
   std::map<size_t, std::map<field_id_t, bool> > hasBeenModified;
-
+  
   // rank, fid, indices
   std::map<int, std::map<int, std::vector<size_t> > > ghostIndices;
   std::map<int, std::map<int, std::vector<size_t> > > sharedIndices;
@@ -554,6 +548,10 @@ struct mpi_context_policy_t {
   // rank, total size
   std::map<int, int> ghostSize;
   std::map<int, int> sharedSize;
+#ifdef FLECSI_USE_ONE_SIDED_AGGCOMM
+  std::map<int, MPI_Group> ghostGroups;
+  std::map<int, MPI_Group> sharedGroups;
+#endif
 
 private:
   int color_ = 0;
@@ -574,7 +572,6 @@ private:
   //  > task_registry_;
 
   std::map<field_id_t, std::vector<uint8_t>> field_data;
-  std::map<field_id_t, field_metadata_t> field_metadata;
 
   std::map<size_t, index_space_data_t> index_space_data_map_;
   std::map<size_t, index_subspace_data_t> index_subspace_data_map_;

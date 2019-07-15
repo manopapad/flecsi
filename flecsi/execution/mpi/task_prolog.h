@@ -18,6 +18,7 @@ All rights reserved.
 #include <vector>
 #include <set>
 #include <numeric>
+#include <flecsi-config.h>
 
 #include "mpi.h"
 #include <flecsi/coloring/mpi_utils.h>
@@ -320,6 +321,106 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
 
   void launch_copies() {
 
+#ifdef FLECSI_USE_ONE_SIDED_AGGCOMM
+
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+    auto & context = context_t::instance();
+    const int my_color = context.color();
+
+    std::map<int, unsigned char*> allSendBuffer;
+    std::map<int, unsigned char*> allRecvBuffer;
+    std::map<int, MPI_Win*> allWindows;
+
+    for(auto const & [r, s] : context.sharedSize) {
+
+      unsigned char *sendBuffer = new unsigned char[s]{};
+      allSendBuffer[r] = sendBuffer;
+
+      int offset = 0;
+
+      MPI_Group grp_shared = MPI_GROUP_EMPTY;
+      MPI_Group grp_ghost = MPI_GROUP_EMPTY;
+
+      for(auto const & [fid, ind] : context.sharedIndices[r]) {
+
+        for(size_t const & index_space : listOfIndexSpaces) {
+
+          if(context.hasBeenModified[index_space].find(fid) == context.hasBeenModified[index_space].end() ||
+             !context.hasBeenModified[index_space][fid])
+            continue;
+
+          if(sharedDataBuffers.find(index_space) == sharedDataBuffers.end())
+            continue;
+
+          if(sharedDataBuffers[index_space].find(fid) == sharedDataBuffers[index_space].end())
+            continue;
+
+          for(auto const & i : ind) {
+            memcpy(&sendBuffer[offset],
+                   &sharedDataBuffers[index_space][fid][i*context.templateParamSize[r][fid]],
+                   context.templateParamSize[r][fid]);
+            offset += context.templateParamSize[r][fid];
+          }
+
+        }
+
+        MPI_Group_union(grp_shared, context.sharedGroups[fid], &grp_shared);
+        MPI_Group_union(grp_ghost, context.ghostGroups[fid], &grp_ghost);
+
+      }
+
+      MPI_Win *win = new MPI_Win;
+      MPI_Win_create(sendBuffer, s, 1, MPI_INFO_NULL, MPI_COMM_WORLD, win);
+      allWindows[r] = win;
+
+      MPI_Win_post(grp_shared, 0, *win);
+      MPI_Win_start(grp_ghost, 0, *win);
+
+    }
+
+    for(auto const & [r, s] : context.ghostSize) {
+      unsigned char *recvBuffer = new unsigned char[s]{};
+      allRecvBuffer[r] = recvBuffer;
+      MPI_Get(recvBuffer, s, MPI_CHAR, r, 0, s, MPI_CHAR, *allWindows[r]);
+    }
+
+    for(auto const & [r, s] : context.ghostSize) {
+
+      int offset = 0;
+
+      for(auto const & [fid, ind] : context.ghostIndices[r]) {
+
+        for(size_t const & index_space : listOfIndexSpaces) {
+
+          if(ghostDataBuffers.find(index_space) == ghostDataBuffers.end())
+            continue;
+
+          if(ghostDataBuffers[index_space].find(fid) == ghostDataBuffers[index_space].end())
+            continue;
+
+          for(auto const & i : ind) {
+            memcpy(&ghostDataBuffers[index_space][fid][i*context.templateParamSize[r][fid]],
+                   &allRecvBuffer[r][offset],
+                   context.templateParamSize[r][fid]);
+            offset += context.templateParamSize[r][fid];
+          }
+
+        }
+
+      }
+
+    }
+
+    for(auto & [r, w] : allWindows) {
+      MPI_Win_complete(*w);
+      MPI_Win_wait(*w);
+      MPI_Win_free(w);
+    }
+
+#else
+
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
@@ -409,6 +510,8 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
 
     for(auto & [r, req] : allSendRequests)
       MPI_Wait(&req, MPI_STATUS_IGNORE);
+
+#endif
 
   }
 
