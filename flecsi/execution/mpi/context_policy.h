@@ -246,38 +246,19 @@ struct mpi_context_policy_t {
   void register_field_metadata(const field_id_t fid,
     const coloring_info_t & coloring_info,
     const index_coloring_t & index_coloring) {
-    std::map<int, std::vector<int>> compact_origin_lengs;
-    std::map<int, std::vector<int>> compact_origin_disps;
 
-    std::map<int, std::vector<int>> compact_target_lengs;
-    std::map<int, std::vector<int>> compact_target_disps;
-
-    field_metadata_t metadata;
-
-    register_field_metadata_<T>(metadata, fid, coloring_info, index_coloring,
-      compact_origin_lengs, compact_origin_disps, compact_target_lengs,
-      compact_target_disps);
-
-    for(auto ghost_owner : coloring_info.ghost_owners) {
-      MPI_Datatype origin_type;
-      MPI_Datatype target_type;
-
-      MPI_Type_indexed(compact_origin_lengs[ghost_owner].size(),
-        compact_origin_lengs[ghost_owner].data(),
-        compact_origin_disps[ghost_owner].data(),
-        flecsi::utils::mpi_typetraits_u<T>::type(), &origin_type);
-      MPI_Type_commit(&origin_type);
-      metadata.origin_types.insert({ghost_owner, origin_type});
-
-      MPI_Type_indexed(compact_target_lengs[ghost_owner].size(),
-        compact_target_lengs[ghost_owner].data(),
-        compact_target_disps[ghost_owner].data(),
-        flecsi::utils::mpi_typetraits_u<T>::type(), &target_type);
-      MPI_Type_commit(&target_type);
-      metadata.target_types.insert({ghost_owner, target_type});
+    for(auto & shared : index_coloring.shared) {
+      for(auto & s : shared.shared) {
+        sharedIndices[s][fid].push_back(shared.offset);
+        templateParamSize[s][fid] = sizeof(T);
+        sharedSize[s] += sizeof(T);
+      }
+    }
+    for(auto & ghost : index_coloring.ghost) {
+      ghostIndices[ghost.rank][fid].push_back(ghost.offset);
+      ghostSize[ghost.rank] += sizeof(T);
     }
 
-    field_metadata.insert({fid, metadata});
   }
 
   /*!
@@ -565,6 +546,14 @@ struct mpi_context_policy_t {
   int rank;
 
   std::map<size_t, std::map<field_id_t, bool> > hasBeenModified;
+
+  // rank, fid, indices
+  std::map<int, std::map<int, std::vector<size_t> > > ghostIndices;
+  std::map<int, std::map<int, std::vector<size_t> > > sharedIndices;
+  std::map<int, std::map<int, size_t> > templateParamSize;
+  // rank, total size
+  std::map<int, int> ghostSize;
+  std::map<int, int> sharedSize;
 
 private:
   int color_ = 0;

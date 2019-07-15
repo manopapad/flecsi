@@ -16,6 +16,8 @@ All rights reserved.
 /*! @file */
 
 #include <vector>
+#include <set>
+#include <numeric>
 
 #include "mpi.h"
 #include <flecsi/coloring/mpi_utils.h>
@@ -62,25 +64,20 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
     auto & h = a.handle;
     auto & context = context_t::instance();
 
-    if(!(context.hasBeenModified[h.index_space].find(h.fid) != context.hasBeenModified[h.index_space].end() && context.hasBeenModified[h.index_space][h.fid]))
+    if(context.hasBeenModified[h.index_space].find(h.fid) == context.hasBeenModified[h.index_space].end() ||
+       !context.hasBeenModified[h.index_space][h.fid])
       return;
 
-    const int my_color = context.color();
-    auto & my_coloring_info = context.coloring_info(h.index_space).at(my_color);
-    auto & field_metadata = context.registered_field_metadata().at(h.fid);
+    listOfIndexSpaces.insert(h.index_space);
+
+    auto & my_coloring_info = context.coloring_info(h.index_space).at(context.color());
 
     auto data = context.registered_field_data().at(h.fid).data();
     auto shared_data = data + my_coloring_info.exclusive * sizeof(T);
+    auto ghost_data = shared_data + my_coloring_info.shared * sizeof(T);
 
     sharedDataBuffers[h.index_space][h.fid] = shared_data;
-    sizeOfTemplateParam[h.index_space][h.fid] = sizeof(T);
-
-    ghostDataBuffers[h.index_space][h.fid] = reinterpret_cast<void*>(h.ghost_data);
-
-    for(auto ghost_owner : my_coloring_info.ghost_owners) {
-        originMpiDataTypes[h.index_space][ghost_owner][h.fid] = field_metadata.origin_types[ghost_owner];
-        targetMpiDataTypes[h.index_space][ghost_owner][h.fid] = field_metadata.target_types[ghost_owner];
-    }
+    ghostDataBuffers[h.index_space][h.fid] = ghost_data;
 
   }
 
@@ -323,37 +320,86 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
 
   void launch_copies() {
 
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
     auto & context = context_t::instance();
     const int my_color = context.color();
 
-    for(auto const& [index_space, allranks] : originMpiDataTypes) {
+    std::map<int, unsigned char*> allSendBuffer;
+    std::map<int, unsigned char*> allRecvBuffer;
+    std::map<int, MPI_Request> allSendRequests;
+    std::map<int, MPI_Request> allRecvRequests;
 
-      for(auto const& [ghost_owner, allfields] : allranks) {
+    for(auto const & [r, s] : context.ghostSize) {
+      unsigned char *recvBuffer = new unsigned char[s]{};
+      MPI_Request req;
+      MPI_Irecv(recvBuffer, s, MPI_CHAR, r, r, MPI_COMM_WORLD, &req);
+      allRecvBuffer[r] = recvBuffer;
+      allRecvRequests[r] = req;
+    }
 
-        for(auto const& [fid, datatype] : allfields) {
+    for(auto const & [r, s] : context.sharedSize) {
 
-          auto & context = context_t::instance();
+      unsigned char *sendBuffer = new unsigned char[s]{};
+      allSendBuffer[r] = sendBuffer;
 
-          if(!(context.hasBeenModified[index_space].find(fid) != context.hasBeenModified[index_space].end() && context.hasBeenModified[index_space][fid]))
+      int offset = 0;
+
+      for(auto const & [fid, ind] : context.sharedIndices[r]) {
+
+        for(size_t const & index_space : listOfIndexSpaces) {
+
+          if(context.hasBeenModified[index_space].find(fid) == context.hasBeenModified[index_space].end() ||
+             !context.hasBeenModified[index_space][fid])
             continue;
 
-          auto & my_coloring_info = context.coloring_info(index_space).at(my_color);
-          auto & field_metadata = context.registered_field_metadata().at(fid);
+          if(sharedDataBuffers.find(index_space) == sharedDataBuffers.end())
+            continue;
 
-          MPI_Win win;
-          MPI_Win_create(sharedDataBuffers[index_space][fid], my_coloring_info.shared * sizeOfTemplateParam[index_space][fid], sizeOfTemplateParam[index_space][fid],
-                        MPI_INFO_NULL, MPI_COMM_WORLD, &win);
+          if(sharedDataBuffers[index_space].find(fid) == sharedDataBuffers[index_space].end())
+            continue;
 
-          MPI_Win_post(field_metadata.shared_users_grp, 0, win);
-          MPI_Win_start(field_metadata.ghost_owners_grp, 0, win);
+          for(auto const & i : ind) {
+            memcpy(&sendBuffer[offset],
+                   &sharedDataBuffers[index_space][fid][i*context.templateParamSize[r][fid]],
+                   context.templateParamSize[r][fid]);
+            offset += context.templateParamSize[r][fid];
+          }
 
-          MPI_Get(ghostDataBuffers[index_space][fid], 1, datatype,
-            ghost_owner, 0, 1, targetMpiDataTypes[index_space][ghost_owner][fid], win);
+        }
 
-          MPI_Win_complete(win);
-          MPI_Win_wait(win);
+      }
 
-          MPI_Win_free(&win);
+      MPI_Request req;
+      MPI_Isend(sendBuffer, s, MPI_CHAR, r, rank, MPI_COMM_WORLD, &req);
+      allSendRequests[r] = req;
+
+    }
+
+    for(auto & [r, req] : allRecvRequests)
+      MPI_Wait(&req, MPI_STATUS_IGNORE);
+
+    for(auto const & [r, s] : context.ghostSize) {
+
+      int offset = 0;
+
+      for(auto const & [fid, ind] : context.ghostIndices[r]) {
+
+        for(size_t const & index_space : listOfIndexSpaces) {
+
+          if(ghostDataBuffers.find(index_space) == ghostDataBuffers.end())
+            continue;
+
+          if(ghostDataBuffers[index_space].find(fid) == ghostDataBuffers[index_space].end())
+            continue;
+
+          for(auto const & i : ind) {
+            memcpy(&ghostDataBuffers[index_space][fid][i*context.templateParamSize[r][fid]],
+                   &allRecvBuffer[r][offset],
+                   context.templateParamSize[r][fid]);
+            offset += context.templateParamSize[r][fid];
+          }
 
         }
 
@@ -361,15 +407,14 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
 
     }
 
+    for(auto & [r, req] : allSendRequests)
+      MPI_Wait(&req, MPI_STATUS_IGNORE);
+
   }
 
   std::map<size_t, std::map<field_id_t, unsigned char*> > sharedDataBuffers;
-  std::map<size_t, std::map<field_id_t, size_t> > sizeOfTemplateParam;
-  std::map<size_t, std::map<field_id_t, void*> > ghostDataBuffers;
-
-  // index_space, remoterank, field_id, datatype
-  std::map<size_t, std::map<int, std::map<field_id_t, MPI_Datatype> > > originMpiDataTypes;
-  std::map<size_t, std::map<int, std::map<field_id_t, MPI_Datatype> > > targetMpiDataTypes;
+  std::map<size_t, std::map<field_id_t, unsigned char*> > ghostDataBuffers;
+  std::set<size_t> listOfIndexSpaces;
 
 }; // struct task_prolog_t
 
