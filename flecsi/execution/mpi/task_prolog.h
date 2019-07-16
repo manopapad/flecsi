@@ -335,7 +335,7 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
 
     for(auto const & [r, s] : context.sharedSize) {
 
-      allSendBuffer.insert(std::make_pair(r, std::unique_ptr<unsigned char[]>(new unsigned char[s]{})));
+      allSendBuffer[r] = std::make_unique<unsigned char[]>(s);
 
       int offset = 0;
 
@@ -380,7 +380,7 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
     }
 
     for(auto const & [r, s] : context.ghostSize) {
-      allRecvBuffer.insert(std::make_pair(r, std::unique_ptr<unsigned char[]>(new unsigned char[s]{})));
+      allRecvBuffer[r] = std::make_unique<unsigned char[]>(s);
       MPI_Get(allRecvBuffer[r].get(), s, MPI_CHAR, r, 0, s, MPI_CHAR, *allWindows[r]);
     }
 
@@ -431,7 +431,7 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
     std::map<int, MPI_Request> allRecvRequests;
 
     for(auto const & [r, s] : context.ghostSize) {
-      allRecvBuffer.insert(std::make_pair(r, std::unique_ptr<unsigned char[]>(new unsigned char[s]{})));
+      allRecvBuffer[r] = std::make_unique<unsigned char[]>(s);
       MPI_Request req;
       MPI_Irecv(allRecvBuffer[r].get(), s, MPI_CHAR, r, r, MPI_COMM_WORLD, &req);
       allRecvRequests[r] = req;
@@ -439,7 +439,7 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
 
     for(auto const & [r, s] : context.sharedSize) {
 
-      allSendBuffer.insert(std::make_pair(r, std::unique_ptr<unsigned char[]>(new unsigned char[s]{})));
+      allSendBuffer[r] = std::make_unique<unsigned char[]>(s);
 
       int offset = 0;
 
