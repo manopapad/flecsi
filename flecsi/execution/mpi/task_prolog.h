@@ -329,14 +329,13 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
     auto & context = context_t::instance();
     const int my_color = context.color();
 
-    std::map<int, unsigned char*> allSendBuffer;
-    std::map<int, unsigned char*> allRecvBuffer;
+    std::map<int, std::unique_ptr<unsigned char[]> > allSendBuffer;
+    std::map<int, std::unique_ptr<unsigned char[]> > allRecvBuffer;
     std::map<int, MPI_Win*> allWindows;
 
     for(auto const & [r, s] : context.sharedSize) {
 
-      unsigned char *sendBuffer = new unsigned char[s]{};
-      allSendBuffer[r] = sendBuffer;
+      allSendBuffer.insert(std::make_pair(r, std::unique_ptr<unsigned char[]>(new unsigned char[s]{})));
 
       int offset = 0;
 
@@ -358,7 +357,7 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
             continue;
 
           for(auto const & i : ind) {
-            memcpy(&sendBuffer[offset],
+            memcpy(&allSendBuffer[r][offset],
                    &sharedDataBuffers[index_space][fid][i*context.templateParamSize[r][fid]],
                    context.templateParamSize[r][fid]);
             offset += context.templateParamSize[r][fid];
@@ -372,7 +371,7 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
       }
 
       MPI_Win *win = new MPI_Win;
-      MPI_Win_create(sendBuffer, s, 1, MPI_INFO_NULL, MPI_COMM_WORLD, win);
+      MPI_Win_create(allSendBuffer[r].get(), s, 1, MPI_INFO_NULL, MPI_COMM_WORLD, win);
       allWindows[r] = win;
 
       MPI_Win_post(grp_shared, 0, *win);
@@ -381,9 +380,8 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
     }
 
     for(auto const & [r, s] : context.ghostSize) {
-      unsigned char *recvBuffer = new unsigned char[s]{};
-      allRecvBuffer[r] = recvBuffer;
-      MPI_Get(recvBuffer, s, MPI_CHAR, r, 0, s, MPI_CHAR, *allWindows[r]);
+      allRecvBuffer.insert(std::make_pair(r, std::unique_ptr<unsigned char[]>(new unsigned char[s]{})));
+      MPI_Get(allRecvBuffer[r].get(), s, MPI_CHAR, r, 0, s, MPI_CHAR, *allWindows[r]);
     }
 
     for(auto const & [r, s] : context.ghostSize) {
@@ -427,23 +425,21 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
     auto & context = context_t::instance();
     const int my_color = context.color();
 
-    std::map<int, unsigned char*> allSendBuffer;
-    std::map<int, unsigned char*> allRecvBuffer;
+    std::map<int, std::unique_ptr<unsigned char[]> > allSendBuffer;
+    std::map<int, std::unique_ptr<unsigned char[]> > allRecvBuffer;
     std::map<int, MPI_Request> allSendRequests;
     std::map<int, MPI_Request> allRecvRequests;
 
     for(auto const & [r, s] : context.ghostSize) {
-      unsigned char *recvBuffer = new unsigned char[s]{};
+      allRecvBuffer.insert(std::make_pair(r, std::unique_ptr<unsigned char[]>(new unsigned char[s]{})));
       MPI_Request req;
-      MPI_Irecv(recvBuffer, s, MPI_CHAR, r, r, MPI_COMM_WORLD, &req);
-      allRecvBuffer[r] = recvBuffer;
+      MPI_Irecv(allRecvBuffer[r].get(), s, MPI_CHAR, r, r, MPI_COMM_WORLD, &req);
       allRecvRequests[r] = req;
     }
 
     for(auto const & [r, s] : context.sharedSize) {
 
-      unsigned char *sendBuffer = new unsigned char[s]{};
-      allSendBuffer[r] = sendBuffer;
+      allSendBuffer.insert(std::make_pair(r, std::unique_ptr<unsigned char[]>(new unsigned char[s]{})));
 
       int offset = 0;
 
@@ -462,7 +458,7 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
             continue;
 
           for(auto const & i : ind) {
-            memcpy(&sendBuffer[offset],
+            memcpy(&allSendBuffer[r].get()[offset],
                    &sharedDataBuffers[index_space][fid][i*context.templateParamSize[r][fid]],
                    context.templateParamSize[r][fid]);
             offset += context.templateParamSize[r][fid];
@@ -473,7 +469,7 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
       }
 
       MPI_Request req;
-      MPI_Isend(sendBuffer, s, MPI_CHAR, r, rank, MPI_COMM_WORLD, &req);
+      MPI_Isend(allSendBuffer[r].get(), s, MPI_CHAR, r, rank, MPI_COMM_WORLD, &req);
       allSendRequests[r] = req;
 
     }
@@ -497,7 +493,7 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
 
           for(auto const & i : ind) {
             memcpy(&ghostDataBuffers[index_space][fid][i*context.templateParamSize[r][fid]],
-                   &allRecvBuffer[r][offset],
+                   &allRecvBuffer[r].get()[offset],
                    context.templateParamSize[r][fid]);
             offset += context.templateParamSize[r][fid];
           }
