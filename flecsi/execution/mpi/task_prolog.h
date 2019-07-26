@@ -65,11 +65,14 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
     auto & h = a.handle;
     auto & context = context_t::instance();
 
-    if(context.hasBeenModified[h.index_space].find(h.fid) == context.hasBeenModified[h.index_space].end() ||
+    auto rank = context_t::instance().color();
+
+    if(context.hasBeenModified.count(h.index_space) == 0 ||
+       context.hasBeenModified[h.index_space].count(h.fid) == 0 ||
        !context.hasBeenModified[h.index_space][h.fid])
       return;
 
-    listOfIndexSpaces.insert(h.index_space);
+    fidsInIndexSpace[h.index_space].push_back(h.fid);
 
     auto & my_coloring_info = context.coloring_info(h.index_space).at(context.color());
 
@@ -321,181 +324,147 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
 
   void launch_copies() {
 
-#ifdef FLECSI_USE_ONE_SIDED_AGGCOMM
-
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
-    auto & context = context_t::instance();
-    const int my_color = context.color();
-
-    std::map<int, std::unique_ptr<unsigned char[]> > allSendBuffer;
-    std::map<int, std::unique_ptr<unsigned char[]> > allRecvBuffer;
-    std::map<int, MPI_Win*> allWindows;
-
-    for(auto const & [r, s] : context.sharedSize) {
-
-      allSendBuffer[r] = std::make_unique<unsigned char[]>(s);
-
-      int offset = 0;
-
-      MPI_Group grp_shared = MPI_GROUP_EMPTY;
-      MPI_Group grp_ghost = MPI_GROUP_EMPTY;
-
-      for(auto const & [fid, ind] : context.sharedIndices[r]) {
-
-        for(size_t const & index_space : listOfIndexSpaces) {
-
-          if(context.hasBeenModified[index_space].find(fid) == context.hasBeenModified[index_space].end() ||
-             !context.hasBeenModified[index_space][fid])
-            continue;
-
-          if(sharedDataBuffers.find(index_space) == sharedDataBuffers.end())
-            continue;
-
-          if(sharedDataBuffers[index_space].find(fid) == sharedDataBuffers[index_space].end())
-            continue;
-
-          for(auto const & i : ind) {
-            memcpy(&allSendBuffer[r][offset],
-                   &sharedDataBuffers[index_space][fid][i*context.templateParamSize[r][fid]],
-                   context.templateParamSize[r][fid]);
-            offset += context.templateParamSize[r][fid];
-          }
-
-        }
-
-        MPI_Group_union(grp_shared, context.sharedGroups[fid], &grp_shared);
-        MPI_Group_union(grp_ghost, context.ghostGroups[fid], &grp_ghost);
-
-      }
-
-      MPI_Win *win = new MPI_Win;
-      MPI_Win_create(allSendBuffer[r].get(), s, 1, MPI_INFO_NULL, MPI_COMM_WORLD, win);
-      allWindows[r] = win;
-
-      MPI_Win_post(grp_shared, 0, *win);
-      MPI_Win_start(grp_ghost, 0, *win);
-
-    }
-
-    for(auto const & [r, s] : context.ghostSize) {
-      allRecvBuffer[r] = std::make_unique<unsigned char[]>(s);
-      MPI_Get(allRecvBuffer[r].get(), s, MPI_CHAR, r, 0, s, MPI_CHAR, *allWindows[r]);
-    }
-
-    for(auto const & [r, s] : context.ghostSize) {
-
-      int offset = 0;
-
-      for(auto const & [fid, ind] : context.ghostIndices[r]) {
-
-        for(size_t const & index_space : listOfIndexSpaces) {
-
-          if(ghostDataBuffers.find(index_space) == ghostDataBuffers.end())
-            continue;
-
-          if(ghostDataBuffers[index_space].find(fid) == ghostDataBuffers[index_space].end())
-            continue;
-
-          for(auto const & i : ind) {
-            memcpy(&ghostDataBuffers[index_space][fid][i*context.templateParamSize[r][fid]],
-                   &allRecvBuffer[r][offset],
-                   context.templateParamSize[r][fid]);
-            offset += context.templateParamSize[r][fid];
-          }
-
-        }
-
-      }
-
-    }
-
-    for(auto & [r, w] : allWindows) {
-      MPI_Win_complete(*w);
-      MPI_Win_wait(*w);
-      MPI_Win_free(w);
-    }
-
-#else
-
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    int mpiRank, mpiSize;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpiRank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
 
     auto & context = context_t::instance();
     const int my_color = context.color();
 
-    std::map<int, std::unique_ptr<unsigned char[]> > allSendBuffer;
-    std::map<int, std::unique_ptr<unsigned char[]> > allRecvBuffer;
-    std::map<int, MPI_Request> allSendRequests;
-    std::map<int, MPI_Request> allRecvRequests;
+    std::vector<std::vector<unsigned char> > allSendBuffer;
+    std::vector<std::vector<unsigned char> > allRecvBuffer;
+    std::vector<MPI_Request> allSendRequests;
+    std::vector<MPI_Request> allRecvRequests;
 
-    for(auto const & [r, s] : context.ghostSize) {
-      allRecvBuffer[r] = std::make_unique<unsigned char[]>(s);
-      MPI_Request req;
-      MPI_Irecv(allRecvBuffer[r].get(), s, MPI_CHAR, r, r, MPI_COMM_WORLD, &req);
-      allRecvRequests[r] = req;
+    // index_space, indices
+    std::map<int, std::vector<size_t> > ghostIndices;
+    std::map<int, std::vector<size_t> > sharedIndices;
+
+    // rank, size
+    std::vector<size_t> ghostSize(mpiSize, 0);
+    std::vector<size_t> sharedSize(mpiSize, 0);
+
+    for(auto & [index_space, fids] : fidsInIndexSpace) {
+
+      auto index_coloring = context_t::instance().coloring(index_space);
+
+      size_t sumOfTemplateSizes = 0;
+      for(auto & fid : fids) {
+
+        if(context.hasBeenModified.count(index_space) &&
+           context.hasBeenModified[index_space].count(fid) &&
+           context.hasBeenModified[index_space][fid])
+
+          sumOfTemplateSizes += context.templateParamSize[fid];
+      }
+
+      for(auto & ghost : index_coloring.ghost) {
+        ghostIndices[ghost.rank].push_back(ghost.offset);
+        ghostSize[ghost.rank] += sumOfTemplateSizes;
+      }
+
+      for(auto & shared : index_coloring.shared) {
+        for(auto & s : shared.shared) {
+          sharedSize[s] += sumOfTemplateSizes;
+          sharedIndices[s].push_back(shared.offset);
+        }
+      }
+
     }
 
-    for(auto const & [r, s] : context.sharedSize) {
+    for(int r = 0; r < ghostSize.size(); ++r) {
 
-      allSendBuffer[r] = std::make_unique<unsigned char[]>(s);
+      const auto bufSize = ghostSize[r];
+
+      allRecvBuffer.emplace_back(bufSize);
+      allRecvRequests.emplace_back();
+
+      int result = MPI_Irecv(&allRecvBuffer[r].data()[0], bufSize, MPI_CHAR, r, r, MPI_COMM_WORLD, &allRecvRequests.back());
+      if(result != MPI_SUCCESS) {
+        std::cerr << "ERROR: MPI_Irecv of rank " << mpiRank << " for receiving data from rank " << r << " failed with error code: " << result << std::endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+      }
+
+    }
+
+    for(int r = 0; r < sharedSize.size(); ++r) {
+
+      const auto bufSize = sharedSize[r];
+
+      allSendBuffer.emplace_back(bufSize);
 
       int offset = 0;
 
-      for(auto const & [fid, ind] : context.sharedIndices[r]) {
+      for(auto & [index_space, fids] : fidsInIndexSpace) {
 
-        for(size_t const & index_space : listOfIndexSpaces) {
+        auto index_coloring = context_t::instance().coloring(index_space);
 
-          if(context.hasBeenModified[index_space].find(fid) == context.hasBeenModified[index_space].end() ||
-             !context.hasBeenModified[index_space][fid])
-            continue;
+        for(auto ind : sharedIndices[r]) {
 
-          if(sharedDataBuffers.find(index_space) == sharedDataBuffers.end())
-            continue;
+          for(auto & fid : fids) {
 
-          if(sharedDataBuffers[index_space].find(fid) == sharedDataBuffers[index_space].end())
-            continue;
+            if(context.hasBeenModified.count(index_space) &&
+               context.hasBeenModified[index_space].count(fid) &&
+               context.hasBeenModified[index_space][fid]) {
 
-          for(auto const & i : ind) {
-            memcpy(&allSendBuffer[r].get()[offset],
-                   &sharedDataBuffers[index_space][fid][i*context.templateParamSize[r][fid]],
-                   context.templateParamSize[r][fid]);
-            offset += context.templateParamSize[r][fid];
+              memcpy(&allSendBuffer.back()[offset],
+                    &sharedDataBuffers[index_space][fid][ind*context.templateParamSize[fid]],
+                    context.templateParamSize[fid]);
+              offset += context.templateParamSize[fid];
+
+            }
+
           }
 
         }
 
       }
 
-      MPI_Request req;
-      MPI_Isend(allSendBuffer[r].get(), s, MPI_CHAR, r, rank, MPI_COMM_WORLD, &req);
-      allSendRequests[r] = req;
+      allSendRequests.emplace_back();
+
+      int result = MPI_Isend(allSendBuffer[r].data(), bufSize, MPI_CHAR, r, mpiRank, MPI_COMM_WORLD, &allSendRequests.back());
+      if(result != MPI_SUCCESS) {
+        std::cerr << "ERROR: MPI_Isend of rank " << mpiRank << " for data sent to " << r << " failed with error code: " << result << std::endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+      }
+
 
     }
 
-    for(auto & [r, req] : allRecvRequests)
-      MPI_Wait(&req, MPI_STATUS_IGNORE);
+    int result = MPI_Waitall(allRecvRequests.size(), allRecvRequests.data(), MPI_STATUSES_IGNORE);
+    if(result != MPI_SUCCESS) {
+      std::cerr << "ERROR: MPI_Waitall of rank " << mpiRank << " on recv requests failed with error code: " << result << std::endl;
+      MPI_Abort(MPI_COMM_WORLD, 1);
+    }
 
-    for(auto const & [r, s] : context.ghostSize) {
+    for(int r = 0; r < ghostSize.size(); ++r) {
+
+      const auto bufSize = ghostSize[r];
+
+      if(bufSize == 0)
+        continue;
 
       int offset = 0;
 
-      for(auto const & [fid, ind] : context.ghostIndices[r]) {
+      for(auto & [index_space, fids] : fidsInIndexSpace) {
 
-        for(size_t const & index_space : listOfIndexSpaces) {
+        auto index_coloring = context_t::instance().coloring(index_space);
 
-          if(ghostDataBuffers.find(index_space) == ghostDataBuffers.end())
-            continue;
+        for(auto ind : ghostIndices[r]) {
 
-          if(ghostDataBuffers[index_space].find(fid) == ghostDataBuffers[index_space].end())
-            continue;
+          for(auto & fid : fids) {
 
-          for(auto const & i : ind) {
-            memcpy(&ghostDataBuffers[index_space][fid][i*context.templateParamSize[r][fid]],
-                   &allRecvBuffer[r].get()[offset],
-                   context.templateParamSize[r][fid]);
-            offset += context.templateParamSize[r][fid];
+            if(context.hasBeenModified.count(index_space) &&
+               context.hasBeenModified[index_space].count(fid) &&
+               context.hasBeenModified[index_space][fid]) {
+
+              memcpy(&ghostDataBuffers[index_space][fid][ind*context.templateParamSize[fid]],
+                      &allRecvBuffer[r][offset],
+                      context.templateParamSize[fid]);
+              offset += context.templateParamSize[fid];
+
+            }
+
           }
 
         }
@@ -504,16 +473,15 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
 
     }
 
-    for(auto & [r, req] : allSendRequests)
-      MPI_Wait(&req, MPI_STATUS_IGNORE);
+    MPI_Waitall(allSendRequests.size(), allSendRequests.data(), MPI_STATUSES_IGNORE);
 
-#endif
+    MPI_Barrier(MPI_COMM_WORLD);
 
   }
 
   std::map<size_t, std::map<field_id_t, unsigned char*> > sharedDataBuffers;
   std::map<size_t, std::map<field_id_t, unsigned char*> > ghostDataBuffers;
-  std::set<size_t> listOfIndexSpaces;
+  std::map<size_t, std::vector<size_t> > fidsInIndexSpace;
 
 }; // struct task_prolog_t
 

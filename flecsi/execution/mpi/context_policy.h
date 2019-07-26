@@ -232,30 +232,7 @@ struct mpi_context_policy_t {
     const coloring_info_t & coloring_info,
     const index_coloring_t & index_coloring) {
 
-#ifdef FLECSI_USE_ONE_SIDED_AGGCOMM
-
-    std::vector<int> shared_users(coloring_info.shared_users.begin(), coloring_info.shared_users.end());
-    std::vector<int> ghost_owners(coloring_info.ghost_owners.begin(), coloring_info.ghost_owners.end());
-
-    MPI_Group comm_grp;
-    MPI_Comm_group(MPI_COMM_WORLD, &comm_grp);
-
-    MPI_Group_incl(comm_grp, shared_users.size(), shared_users.data(), &sharedGroups[fid]);
-    MPI_Group_incl(comm_grp, ghost_owners.size(), ghost_owners.data(), &ghostGroups[fid]);
-
-#endif
-
-    for(auto & shared : index_coloring.shared) {
-      for(auto & s : shared.shared) {
-        sharedIndices[s][fid].push_back(shared.offset);
-        templateParamSize[s][fid] = sizeof(T);
-        sharedSize[s] += sizeof(T);
-      }
-    }
-    for(auto & ghost : index_coloring.ghost) {
-      ghostIndices[ghost.rank][fid].push_back(ghost.offset);
-      ghostSize[ghost.rank] += sizeof(T);
-    }
+    templateParamSize[fid] = sizeof(T);
 
   }
 
@@ -540,14 +517,8 @@ struct mpi_context_policy_t {
   int rank;
 
   std::map<size_t, std::map<field_id_t, bool> > hasBeenModified;
-  
-  // rank, fid, indices
-  std::map<int, std::map<int, std::vector<size_t> > > ghostIndices;
-  std::map<int, std::map<int, std::vector<size_t> > > sharedIndices;
-  std::map<int, std::map<int, size_t> > templateParamSize;
-  // rank, total size
-  std::map<int, int> ghostSize;
-  std::map<int, int> sharedSize;
+
+  std::map<int, size_t> templateParamSize;
 #ifdef FLECSI_USE_ONE_SIDED_AGGCOMM
   std::map<int, MPI_Group> ghostGroups;
   std::map<int, MPI_Group> sharedGroups;
