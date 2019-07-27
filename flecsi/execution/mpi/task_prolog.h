@@ -358,8 +358,10 @@ struct task_prolog_t : public flecsi::utils::tuple_walker_u<task_prolog_t> {
           sumOfTemplateSizes += context.templateParamSize[fid];
       }
 
+      size_t ghost_cnt = 0;
       for(auto & ghost : index_coloring.ghost) {
-        ghostIndices[ghost.rank].push_back(ghost.offset);
+        ghostIndices[ghost.rank].push_back(ghost_cnt);
+        ghost_cnt++;
         ghostSize[ghost.rank] += sumOfTemplateSizes;
       }
 
