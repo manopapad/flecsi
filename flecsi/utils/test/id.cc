@@ -124,7 +124,6 @@ TEST(id, all) {
 
     const id c = id::make<1, 2>(3, 4, 0, 5);
     const id d = id::make<1, 2>(3, 4, 6, 5);
-    print(a);
     print(b);
   }
 
@@ -133,10 +132,6 @@ TEST(id, all) {
   // ------------------------
 
   {
-<<<<<<< HEAD
-
-=======
->>>>>>> 74e0ff4ff24fce1f8429e76042cd931dbed0bd37
     const id a = id::make<1, 2>(3, 4, 6, 5);
     print(a);
 
@@ -160,10 +155,6 @@ TEST(id, all) {
   // ------------------------
 
   {
-<<<<<<< HEAD
-
-=======
->>>>>>> 74e0ff4ff24fce1f8429e76042cd931dbed0bd37
     id a = id::make<1, 2>(3, 4, 6, 5);
     id b = id{};
     a = b = id{};
@@ -171,19 +162,11 @@ TEST(id, all) {
   }
 
   // ------------------------
-<<<<<<< HEAD
-
-=======
->>>>>>> 74e0ff4ff24fce1f8429e76042cd931dbed0bd37
   // setters
   // ------------------------
 
   {
     id a = id::make<1, 2>(3, 4, 6, 5);
-    print(a);
-    a.set_global(100);
-    a.set_partition(200);
-    a.set_flags(15);
     print(a);
   }
 
