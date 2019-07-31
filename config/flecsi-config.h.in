@@ -65,6 +65,7 @@
 //----------------------------------------------------------------------------//
 
 #cmakedefine FLECSI_USE_ONE_SIDED_AGGCOMM
+#cmakedefine FLECSI_USE_TAUSCH_FOR_AGGCOMM
 
 //----------------------------------------------------------------------------//
 // Process id bits

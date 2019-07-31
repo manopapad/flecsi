@@ -425,6 +425,9 @@ list(APPEND FLECSI_LIBRARY_DEPENDENCIES ${COLORING_LIBRARIES})
 option(FLECSI_USE_ONE_SIDED_AGGCOMM
        "Use one-sided communication (MPI_Win) for aggregated communication (dense handle)"
        OFF)
+option(FLECSI_USE_TAUSCH_FOR_AGGCOMM
+       "Use Tausch halo exchange library for communicating halo data"
+       OFF)
 
 #------------------------------------------------------------------------------#
 # Process id bits

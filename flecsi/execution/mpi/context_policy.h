@@ -232,6 +232,19 @@ struct mpi_context_policy_t {
     const coloring_info_t & coloring_info,
     const index_coloring_t & index_coloring) {
 
+#ifdef FLECSI_USE_ONE_SIDED_AGGCOMM
+
+    std::vector<int> shared_users(coloring_info.shared_users.begin(), coloring_info.shared_users.end());
+    std::vector<int> ghost_owners(coloring_info.ghost_owners.begin(), coloring_info.ghost_owners.end());
+
+    MPI_Group comm_grp;
+    MPI_Comm_group(MPI_COMM_WORLD, &comm_grp);
+
+    MPI_Group_incl(comm_grp, shared_users.size(), shared_users.data(), &sharedGroups[fid]);
+    MPI_Group_incl(comm_grp, ghost_owners.size(), ghost_owners.data(), &ghostGroups[fid]);
+
+#endif
+
     templateParamSize[fid] = sizeof(T);
 
   }
